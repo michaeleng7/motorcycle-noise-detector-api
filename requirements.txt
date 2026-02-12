@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+ultralytics
+easyocr
+opencv-python-headless
+numpy
+pydantic
+requests
