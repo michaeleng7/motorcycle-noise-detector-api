@@ -10,174 +10,151 @@ class LicensePlateRecognitionService:
     def __init__(self):
         print("📥 Loading AI models... (Please wait)")
         self.model_yolo = YOLO('yolov8n.pt')
-        # Using portuguese and english for better OCR accuracy on Brazilian plates
-        self.reader = easyocr.Reader(['pt', 'en'], gpu=False) 
+        
+        # Try to load license plate detection model
+        # If not found, we'll use contour detection as fallback
+        self.plate_model = None
+        try:
+            # Attempt to load a pre-trained license plate detection model
+            # Using a small YOLO model trained on license plates
+            print("📥 Attempting to load license plate detection model...")
+            self.plate_model = YOLO('license-plate-detector.pt')
+            print("✅ License plate model loaded successfully!")
+        except Exception as e:
+            print(f"⚠️  License plate model not found: {e}")
+            print("💡 Will use contour detection as fallback.")
+            self.plate_model = None
+        
+        self.reader = easyocr.Reader(['en'], gpu=False) 
         print("✅ Models loaded successfully!")
 
-    def clean_ocr_text(self, text: str) -> str:
+    def detect_license_plate(self, img: np.ndarray) -> tuple:
         """
-        Cleans and corrects confusing characters in OCR.
+        Detects license plate using pre-trained model if available.
+        Returns (x, y, w, h) of the plate bounding box or None.
+        Falls back to contour detection if model is unavailable.
         """
-        # Corrections for common OCR confusions in license plates
-        replacements = {
-            'O': '0',  # Character O could be confused with zero
-            'I': '1',  # Character I could be confused with number 1
-            'l': '1',  # Lowercase letter l could be confused with number 1
-            'S': '5',  # Character S could be confused with number 5
-            'B': '8',  # Character B could be confused with number 8
-        }
+        # Try using the pre-trained plate detection model
+        if self.plate_model is not None:
+            try:
+                results = self.plate_model(img, verbose=False)
+                
+                if results and len(results) > 0:
+                    boxes = results[0].boxes
+                    
+                    if len(boxes) > 0:
+                        # Get the box with highest confidence
+                        best_box = None
+                        best_conf = 0
+                        
+                        for box in boxes:
+                            conf = box.conf[0]
+                            if conf > best_conf:
+                                best_conf = conf
+                                best_box = box
+                        
+                        if best_box is not None:
+                            x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+                            w = x2 - x1
+                            h = y2 - y1
+                            print(f"   ✅ License plate detected by model: ({x1}, {y1}, {w}, {h}) | Confidence: {best_conf:.2f}")
+                            return (x1, y1, w, h)
+            except Exception as e:
+                print(f"   ⚠️  Plate model detection failed: {e}. Using fallback method...")
         
-        # Apply replacements to text
-        result = ""
-        text = text.upper().strip()
+        # Fallback: Use contour detection
+        print(f"   📍 Using contour detection fallback...")
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        dilated = cv2.dilate(edges, kernel, iterations=2)
+        contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         
-        for char in text:
-            result += replacements.get(char, char)
+        valid_contours = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            if area > 500 and w > h and 1.5 < (w / h) < 6:
+                valid_contours.append((x, y, w, h, area))
         
-        return result
+        if valid_contours:
+            valid_contours.sort(key=lambda x: x[4], reverse=True)
+            x, y, w, h, _ = valid_contours[0]
+            print(f"   ✅ License plate detected by contour: ({x}, {y}, {w}, {h})")
+            return (x, y, w, h)
+        
+        print(f"   ❌ No license plate detected by any method.")
+        return None
 
-    def extract_license_plate(self, full_text: str) -> tuple[str, str]:
+    def apply_filters(self, img: np.ndarray) -> list:
         """
-        Try to extract the license plate from the full text.
-        Only accepts strict patterns (MERCOSUL or OLD).
-        Returns None if no exact match is found.
+        Generates 5 different versions of the image to maximize OCR chances.
+        Returns a list of tuples: (description, processed_image)
         """
-        full_text = full_text.upper().replace(" ", "").replace("-", "")
-        
-        # Strict patterns for Brazilian plates:
-        # Mercosul (3 letters, 1 number, 1 letter, 2 numbers) -> Ex: ABC1D23
-        pattern_mercosul = r'[A-Z]{3}[0-9][A-Z][0-9]{2}'
-        
-        # Old plates (3 letters, 4 numbers) -> Ex: ABC1234
-        pattern_old = r'[A-Z]{3}[0-9]{4}'
-        
-        patterns = [
-            (pattern_mercosul, "MERCOSUL"),
-            (pattern_old, "OLD"),
-        ]
-        
-        for pattern, plate_type in patterns:
-            match = re.search(pattern, full_text)
-            if match:
-                plate = match.group()
-                print(f"   🎯 Pattern '{plate_type}' found: {plate}")
-                return plate, plate_type
-        
-        # If no strict pattern found, return None (invalid)
-        print(f"   ❌ No valid pattern found in: '{full_text}'")
-        return None, None
+        filters = []
 
-    def enhance_image_for_ocr(self, roi_img: np.ndarray) -> np.ndarray:
-        """
-        Applies filters to the ROI to improve OCR accuracy.
-        Uses a less aggressive approach to preserve character details.
-        """
-        # Increasing scale (Zoom) helps OCR see small letters
-        img_scaled = cv2.resize(roi_img, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-        
-        gray = cv2.cvtColor(img_scaled, cv2.COLOR_BGR2GRAY)
-        
-        # Apply CLAHE first (preserves details)
+        # 1. Base Pre-processing (Grayscale + Zoom)
+        # Upscale 3x to simulate 'Zoom'
+        img_zoomed = cv2.resize(img, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(img_zoomed, cv2.COLOR_BGR2GRAY)
+
+        # --- OPTION 1: Simple Adaptive Threshold ---
+        # Good for general cases
+        thresh1 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 19, 5)
+        filters.append(("Simple Threshold", thresh1))
+
+        # --- OPTION 2: High Contrast + Dilation (Thicker Letters) ---
+        # Good when letters are too thin or broken
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-        contrasted = clahe.apply(gray)
-        
-        # Light noise reduction
-        denoised = cv2.fastNlMeansDenoising(contrasted, h=10)
-        
-        # Adaptive binarization with parameters optimized for license plates
-        binary = cv2.adaptiveThreshold(
-            denoised, 255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 11, 2
-        )
-        
-        return binary
+        contrast = clahe.apply(gray)
+        binary2 = cv2.adaptiveThreshold(contrast, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
+        kernel = np.ones((2, 2), np.uint8)
+        dilated = cv2.dilate(binary2, kernel, iterations=1)
+        filters.append(("Thick Letters", dilated))
 
-    def ocr_with_confidence_filter(self, image, min_confidence: float = 0.3) -> list:
-        """
-        Performs OCR and returns list of (text, confidence).
-        Does not filter yet - we will do intelligent post-processing.
-        """
-        results = self.reader.readtext(
-            image,
-            detail=1,  # Returns details including confidence
-            paragraph=False,
-            allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
-        )
-        
-        # Returns everything, we will process later
-        text_confidence_pairs = [(text.upper(), confidence) for (bbox, text, confidence) in results]
-        
-        # Detailed log
-        print(f"   - Raw details: {text_confidence_pairs}")
-        
-        return text_confidence_pairs
+        # --- OPTION 3: Gaussian Blur + Otsu (Noise Removal) ---
+        # Good for grainy/noisy images
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        filters.append(("De-Noised Otsu", otsu))
 
-    def merge_ocr_results(self, text_conf_pairs: list, min_confidence: float = 0.3) -> str:
+        # --- OPTION 4: Negative (Inverted) ---
+        # Sometimes OCR prefers white text on black background
+        inverted = cv2.bitwise_not(thresh1)
+        filters.append(("Inverted Colors", inverted))
+
+        # --- OPTION 5: Gamma Correction (Dark/Bright adjustment) ---
+        # Good for shadows
+        gamma = 1.5 # Brighten up
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+        bright = cv2.LUT(gray, table)
+        thresh5 = cv2.adaptiveThreshold(bright, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 19, 5)
+        filters.append(("Gamma Corrected", thresh5))
+
+        return filters
+
+    def calculate_score(self, text: str, confidence: float) -> float:
         """
-        Intelligently merges OCR results, considering confidence and license plate logic.
-        Corrects common OCR confusions based on position context.
+        Scoring System:
+        - Base score: Confidence (0 to 1)
+        - Bonus: Matches Regex Pattern (+100)
+        - Bonus: Correct Length (+10)
         """
-        if not text_conf_pairs:
-            return ""
+        score = confidence
+        text_clean = text.upper().replace("-", "").replace(" ", "")
+
+        # Regex validation (Old Brazil & Mercosul)
+        pattern_combined = r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}'
         
-        # Filters by minimum confidence (more permissive now)
-        valid_pairs = [(text, conf) for text, conf in text_conf_pairs if conf >= min_confidence or len(text) > 1]
+        if len(text_clean) == 7:
+            score += 10 # Points for correct length
         
-        if not valid_pairs:
-            return ""
-        
-        # Merge everything
-        merged = "".join([text for text, conf in valid_pairs])
-        
-        # Intelligent post-processing
-        merged_upper = merged.upper().replace(" ", "").replace("-", "")
-        
-        # Strategy 1: If contains "BRASIL", extract the first 3 letters (BRA)
-        # and try to merge with next elements to form a plate
-        if 'BRASIL' in merged_upper:
-            # Remove BRASIL and get the rest
-            after_brasil = merged_upper.replace('BRASIL', '')
-            # Try: BRA + rest
-            merged_upper = 'BRA' + after_brasil
-        
-        # Strategy 2: Correct common OCR confusions based on context
-        # Position 0-2: Must be letters
-        # Position 3: Must be number
-        # Position 4: Must be letter (Mercosul) or number (Old)
-        # Position 5-6: Must be numbers
-        
-        corrected = ""
-        for i, char in enumerate(merged_upper):
-            if i < 3:  # First 3 positions must be letters
-                if char.isdigit():
-                    # Try to convert number to letter
-                    corrections = {'0': 'O', '1': 'I', '5': 'S', '8': 'B'}
-                    corrected += corrections.get(char, char)
-                else:
-                    corrected += char
-            elif i == 3:  # Position 3 must be number
-                if not char.isdigit():
-                    # Try to convert letter to number
-                    corrections = {'O': '0', 'I': '1', 'S': '5', 'B': '8'}
-                    corrected += corrections.get(char, char)
-                else:
-                    corrected += char
-            elif i == 4:  # Position 4 can be letter (Mercosul) or number (Old)
-                # Keep as is, will be validated by pattern
-                corrected += char
-            else:  # Positions 5+ should be numbers
-                if not char.isdigit():
-                    corrections = {'O': '0', 'I': '1', 'S': '5', 'B': '8'}
-                    corrected += corrections.get(char, char)
-                else:
-                    corrected += char
-        
-        merged_upper = corrected if len(corrected) >= 7 else merged_upper
-        
-        print(f"   📊 Merged result: '{merged_upper}'")
-        
-        return merged_upper
+        if re.match(pattern_combined, text_clean):
+            score += 100 # Jackpot! High points for matching the pattern
+            
+        return score
 
     def process_infraction(self, image_bytes: bytes, decibels: float) -> dict:
         nparr = np.frombuffer(image_bytes, np.uint8)
@@ -186,7 +163,11 @@ class LicensePlateRecognitionService:
         result_data = {
             "license_plate": "UNKNOWN",
             "status": "No motorcycle detected",
-            "file_path": ""
+            "file_path": "",
+            "confidence_score": 0.0,
+            "needs_verification": False,
+            "verification_reason": "",
+            "debug_info": []
         }
 
         results = self.model_yolo(original_img, verbose=False)
@@ -194,77 +175,115 @@ class LicensePlateRecognitionService:
 
         for r in results:
             for box in r.boxes:
-                if int(box.cls) == 3:  # ID 3 = motorcycle
+                if int(box.cls) == 3:  # Motorcycle
                     motorcycle_detected = True
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     
-                    # Crop Strategy: Try different areas of the motorcycle
+                    # Crop Strategy: Bottom 50%
                     height = y2 - y1
+                    start_y = y1 + int(height * 0.5) 
+                    roi_moto = original_img[start_y:y2, x1:x2]
                     
-                    # Strategy 1: Bottom 40% (more likely to have front plate)
-                    roi_strategies = [
-                        ("Bottom 40%", original_img[y1 + int(height * 0.6):y2, x1:x2]),
-                        ("Bottom 50%", original_img[y1 + int(height * 0.5):y2, x1:x2]),
-                        ("Middle-Bottom", original_img[y1 + int(height * 0.3):y2, x1:x2]),
-                        ("Full Motor", original_img[y1:y2, x1:x2]),
-                    ]
+                    if roi_moto.size == 0: continue
                     
-                    best_plate = None
-                    best_type = None
-                    best_strategy = None
+                    # Detect license plate within the motorcycle ROI
+                    print(f"🔍 Detecting license plate in motorcycle region...")
+                    plate_coords = self.detect_license_plate(roi_moto)
                     
-                    for strategy_name, roi_moto in roi_strategies:
-                        if roi_moto.size == 0:
-                            continue
-                        
-                        print(f"\n🔄 Trying strategy: {strategy_name}")
-                        
-                        # ===== APPROACH 1: WITH PROCESSING =====
-                        processed_roi = self.enhance_image_for_ocr(roi_moto)
-                        
-                        # Save processed ROI for debug (optional, comment if you don't want)
-                        # debug_path = os.path.join("static", "images", f"debug_{strategy_name.replace(' ', '_')}.jpg")
-                        # cv2.imwrite(debug_path, processed_roi)
-                        
-                        text_conf_processed = self.ocr_with_confidence_filter(processed_roi)
-                        text_processed = self.merge_ocr_results(text_conf_processed, min_confidence=0.5)
-                        
-                        plate, plate_type = self.extract_license_plate(text_processed)
-                        if plate:
-                            best_plate = plate
-                            best_type = plate_type
-                            best_strategy = f"{strategy_name} (processed)"
-                            print(f"   ✅ SUCCESS! Plate: {plate} ({plate_type})")
-                            break
-                        
-                        # ===== APPROACH 2: WITHOUT PROCESSING (Raw) =====
-                        print(f"   Trying raw (without processing)...")
-                        text_conf_raw = self.ocr_with_confidence_filter(roi_moto)
-                        text_raw = self.merge_ocr_results(text_conf_raw, min_confidence=0.5)
-                        
-                        plate, plate_type = self.extract_license_plate(text_raw)
-                        if plate:
-                            best_plate = plate
-                            best_type = plate_type
-                            best_strategy = f"{strategy_name} (raw)"
-                            print(f"   ✅ SUCCESS! Plate: {plate} ({plate_type})")
-                            break
+                    # Extract the plate ROI (either detected or full)
+                    if plate_coords is not None:
+                        plate_x, plate_y, plate_w, plate_h = plate_coords
+                        # Ensure coordinates are within bounds
+                        plate_x = max(0, plate_x)
+                        plate_y = max(0, plate_y)
+                        plate_x2 = min(roi_moto.shape[1], plate_x + plate_w)
+                        plate_y2 = min(roi_moto.shape[0], plate_y + plate_h)
+                        roi_plate = roi_moto[plate_y:plate_y2, plate_x:plate_x2]
+                    else:
+                        # Fallback: use full ROI if detection fails
+                        print(f"   💡 Using full motorcycle ROI as fallback")
+                        roi_plate = roi_moto
                     
-                    if best_plate:
-                        result_data['license_plate'] = best_plate
+                    if roi_plate.size == 0:
+                        print("   ❌ Plate ROI is invalid. Skipping...")
+                        continue
+                    
+                    # 1. Generate 5 Candidates - using the plate region only
+                    candidates = self.apply_filters(roi_plate)
+                    
+                    best_text = "UNKNOWN"
+                    best_score = -1
+                    best_filter_name = ""
+
+                    print(f"--- 🏁 STARTING OCR TOURNAMENT ---")
+
+                    # 2. Run OCR on all candidates
+                    for i, (filter_name, processed_img) in enumerate(candidates):
+                        # Save debug image
+                        cv2.imwrite(f"static/debug_filter_{i}.jpg", processed_img)
+
+                        readings = self.reader.readtext(processed_img, detail=1, paragraph=False)
                         
-                        # Draw on image
+                        # Concatenate and clean
+                        full_text = "".join([res[1] for res in readings]).upper().replace(" ", "").replace("-", "")
+                        avg_conf = np.mean([res[2] for res in readings]) if readings else 0.0
+                        
+                        # 3. Score the result
+                        score = self.calculate_score(full_text, avg_conf)
+                        
+                        print(f"Filter [{filter_name}]: Read '{full_text}' | Score: {score:.2f}")
+
+                        if score > best_score:
+                            best_score = score
+                            best_text = full_text
+                            best_filter_name = filter_name
+
+                    print(f"🏆 WINNER: {best_filter_name} with '{best_text}'")
+                    
+                    # Normalize score to 0-100 scale
+                    # Max possible: 1.0 (confidence) + 10 (length) + 100 (pattern) = 111
+                    normalized_score = min((best_score / 111.0) * 100, 100.0)
+                    result_data['confidence_score'] = normalized_score
+                    
+                    print(f"📊 Normalized Confidence Score: {normalized_score:.1f}%")
+                    
+                    # Check if score is below 85% - FLAG FOR MANUAL VERIFICATION
+                    if normalized_score < 85:
+                        result_data['needs_verification'] = True
+                        result_data['verification_reason'] = f"Low confidence score ({normalized_score:.1f}%). Manual verification required to ensure accuracy."
+                        print(f"⚠️  LOW CONFIDENCE WARNING ⚠️")
+                        print(f"   Score: {normalized_score:.1f}% (below 85% threshold)")
+                        print(f"   Action: MANUAL VERIFICATION REQUIRED")
+                        print(f"   Please have someone review this image to ensure the detected characters are correct.")
+                    else:
+                        print(f"✅ High confidence ({normalized_score:.1f}%) - No additional verification needed")
+
+                    # Post-Process Winner (Regex Extraction)
+                    # Try to extract exactly the 7 chars
+                    match = re.search(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}', best_text)
+                    if match:
+                        final_plate = match.group()
+                        result_data['license_plate'] = final_plate
+                        
+                        # Draw on original
                         cv2.rectangle(original_img, (x1, y1), (x2, y2), (0, 255, 0), 3)
-                        label = f"PLATE: {best_plate} | {decibels}dB"
+                        
+                        # Color code: Green for high confidence, Yellow for low confidence
+                        text_color = (0, 255, 0) if not result_data['needs_verification'] else (0, 255, 255)
+                        confidence_label = f"({normalized_score:.1f}%)"
+                        label = f"PLATE: {final_plate} {confidence_label}"
                         cv2.putText(original_img, label, (x1, y1-10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                        print(f"\n🎯 Best result - Strategy: {best_strategy}")
-                        break
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+                        break 
+                    else:
+                        # Pattern not found - still flag as needing verification
+                        result_data['needs_verification'] = True
+                        if not result_data['verification_reason']:
+                            result_data['verification_reason'] = "Could not match exact license plate pattern despite processing. Manual verification required." 
 
             if result_data['license_plate'] != "UNKNOWN":
                 break
 
-        # Save Image
         filename = f"{uuid.uuid4()}.jpg"
         save_path = os.path.join("static", "images", filename)
         cv2.imwrite(save_path, original_img)
