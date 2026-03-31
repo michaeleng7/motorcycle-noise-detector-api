@@ -15,9 +15,10 @@ class InfractionResponse(BaseModel):
 # ========== NEW MODELS FOR GOOGLE DRIVE INTEGRATION ==========
 
 class VideoOnDriveRequest(BaseModel):
-    """Request model for receiving a video file ID from backend colleague"""
+    """Request model for receiving occurrence_id + drive_code from AI service"""
+    occurrence_id: Optional[str] = None
     drive_file_id: str
-    metadata: Optional[dict] = None  # Optional metadata from the backend
+    metadata: Optional[dict] = None  # Optional metadata from the AI service
 
 
 class VideoOnDriveResponse(BaseModel):
@@ -29,10 +30,10 @@ class VideoOnDriveResponse(BaseModel):
 
 
 class PlateCodeRequest(BaseModel):
-    """Request model to send detected plate code to backend colleague"""
+    """Request model to receive plate code acknowledgment from AI service"""
     plate_code: str
     confidence: float
-    video_id: str
+    occurrence_id: str
     additional_info: Optional[dict] = None
 
 

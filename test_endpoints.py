@@ -62,6 +62,7 @@ def test_video_on_drive():
     
     # Payload de exemplo
     payload = {
+        "occurrence_id": "occ-test-123",
         "drive_file_id": "1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p",
         "metadata": {
             "timestamp": datetime.now().isoformat(),
@@ -115,7 +116,7 @@ def test_plate_code():
     payload = {
         "plate_code": "ABC1234",
         "confidence": 0.95,
-        "video_id": "1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p",
+        "occurrence_id": "occ-test-123",
         "additional_info": {
             "frame_detected": 150,
             "total_frames_analyzed": 280,

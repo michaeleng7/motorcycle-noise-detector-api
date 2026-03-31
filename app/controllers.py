@@ -25,10 +25,9 @@ except Exception as e:
     print(f"⚠️  Google Drive service initialization warning: {e}")
     google_drive_service = None
 
-# Initialize Backend Integration Service
-# Configure the backend URL based on your colleague's API
+# Initialize Backend Integration Service for AI service
 backend_integration_service = BackendIntegrationService(
-    backend_url=os.getenv("BACKEND_URL", "http://localhost:5000")
+    backend_url="http://0.tcp.sa.ngrok.io:12497"
 )
 
 # Mock Database (In-memory storage)
@@ -85,7 +84,7 @@ def get_dashboard_data():
 @router.post("/video-on-drive", response_model=VideoOnDriveResponse)
 async def video_on_drive(request: VideoOnDriveRequest):
     """
-    ENDPOINT - Receive video file ID from backend colleague for processing.
+    ENDPOINT - Receive video file ID from backend  for processing.
     This endpoint is called by user's backend to notify that a new video is available on Google Drive for processing.
     
     Args:
@@ -97,14 +96,14 @@ async def video_on_drive(request: VideoOnDriveRequest):
     2. Download video from Google Drive
     3. Extract frames at intervals
     4. Process each frame for license plate detection
-    5. Send detected plate code back to backend colleague via POST /plate-code
+    5. Send detected plate code back to backend  via POST /plate-code
     
     Response:
         - status: "received" when queued for processing
     """
     
     try:
-        print(f"\n🎬 [VIDEO-ON-DRIVE] Received video notification from backend colleague")
+        print(f"\n🎬 [VIDEO-ON-DRIVE] Received video notification from backend ")
         print(f"   Drive File ID: {request.drive_file_id}")
         
         # Check if Google Drive service is initialized
@@ -138,7 +137,7 @@ async def video_on_drive(request: VideoOnDriveRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def process_video_from_drive(drive_file_id: str, metadata: dict = None):
+async def process_video_from_drive(occurrence_id: str, drive_file_id: str, metadata: dict = None):
     """
     Background task to process video from Google Drive.
     
@@ -146,7 +145,7 @@ async def process_video_from_drive(drive_file_id: str, metadata: dict = None):
     1. Download video from Google Drive
     2. Extract frames
     3. Process frames with license plate recognition
-    4. Send results back to backend colleague
+    4. Send results back to backend 
     """
     
     try:
@@ -207,8 +206,8 @@ async def process_video_from_drive(drive_file_id: str, metadata: dict = None):
                 print(f"   ⚠️  Error processing frame {frame_number}: {frame_error}")
                 continue
         
-        # Step 4: Send best result back to backend colleague
-        print(f"\n📤 Step 4: Sending results to backend colleague...")
+        # Step 4: Send best result back to backend 
+        print(f"\n📤 Step 4: Sending results to backend ...")
         video_processing_queue[drive_file_id]["status"] = "sending_results"
         
         if detected_plates:
@@ -217,7 +216,7 @@ async def process_video_from_drive(drive_file_id: str, metadata: dict = None):
             
             print(f"   🏆 Best detected plate: {best_plate['plate']} (Confidence: {best_plate['confidence']:.2%})")
             
-            # Send to backend colleague
+            # Send to backend 
             response = await backend_integration_service.send_plate_code_to_backend(
                 plate_code=best_plate['plate'],
                 confidence=best_plate['confidence'],
@@ -241,7 +240,7 @@ async def process_video_from_drive(drive_file_id: str, metadata: dict = None):
             response = await backend_integration_service.send_plate_code_to_backend(
                 plate_code="NOT_DETECTED",
                 confidence=0.0,
-                video_id=drive_file_id,
+                occurrence_id=occurrence_id,
                 additional_info={
                     "frames_analyzed": len(frames),
                     "note": "No motorcycle or license plate detected in video"
@@ -262,7 +261,7 @@ async def plate_code_endpoint(request: PlateCodeRequest):
     """
     ENDPOINT - Receive acknowledgment that plate code was delivered to backend.
     
-    This endpoint is called by user's backend colleague to acknowledge that the plate code sent from this service was received and processed by their backend.
+    This endpoint is called by user's backend  to acknowledge that the plate code sent from this service was received and processed by their backend.
     
     Args:
         plate_code: The license plate code
@@ -275,7 +274,7 @@ async def plate_code_endpoint(request: PlateCodeRequest):
     """
     
     try:
-        print(f"\n✅ [PLATE-CODE ACK] Backend colleague acknowledged plate code: {request.plate_code}")
+        print(f"\n✅ [PLATE-CODE ACK] Backend  acknowledged plate code: {request.plate_code}")
         
         # Log the acknowledgment
         ack_record = {

@@ -5,17 +5,17 @@ import asyncio
 
 class BackendIntegrationService:
     """
-    Service to handle communication with the backend colleague.
-    Sends detected plate codes to the backend API.
+    Service to handle communication with the AI service.
+    Sends detected plate codes to the AI service /plate-code endpoint.
     """
     
-    def __init__(self, backend_url: str = "http://localhost:5000"):
+    def __init__(self, backend_url: str = "http://0.tcp.sa.ngrok.io:12497"):
         """
-        Initialize backend integration service.
+        Initialize AI service integration.
         
         Args:
-            backend_url: Base URL of the colleague's backend API
-                        Example: "http://localhost:5000" or "https://api.backend.com"
+            backend_url: Base URL of the AI service
+                        Example: "http://0.tcp.sa.ngrok.io:12497"
         """
         self.backend_url = backend_url.rstrip('/')
         self.timeout = 10  # seconds
@@ -26,26 +26,26 @@ class BackendIntegrationService:
         self, 
         plate_code: str,
         confidence: float,
-        video_id: str,
+        occurrence_id: str,
         additional_info: Optional[dict] = None
     ) -> dict:
         """
-        Send detected plate code to the backend colleague's API.
+        Send detected plate code to the AI service.
         
         Args:
             plate_code: The recognized license plate code (e.g., "ABC1234")
             confidence: Confidence score (0.0 to 1.0)
-            video_id: Google Drive file ID of the processed video
-            additional_info: Optional additional data (e.g., decibels, timestamp, etc.)
+            occurrence_id: The occurrence ID received from AI service
+            additional_info: Optional additional data (e.g., frame info, etc.)
             
         Returns:
-            Response from backend API or error status
+            Response from AI service or error status
         """
         
         payload = {
             "plate_code": plate_code,
             "confidence": confidence,
-            "video_id": video_id,
+            "occurrence_id": occurrence_id,
             "timestamp": datetime.now().isoformat(),
             "additional_info": additional_info or {}
         }
@@ -107,19 +107,19 @@ class BackendIntegrationService:
             "backend_url": url
         }
     
-    async def notify_video_received(self, video_id: str) -> dict:
+    async def notify_video_received(self, occurrence_id: str) -> dict:
         """
-        Notify backend that a video has been received and processing started.
+        Notify AI service that processing started.
         
         Args:
-            video_id: Google Drive file ID
+            occurrence_id: The occurrence ID from AI service
             
         Returns:
-            Acknowledgment from backend
+            Acknowledgment from AI service
         """
         
         payload = {
-            "video_id": video_id,
+            "occurrence_id": occurrence_id,
             "status": "processing_started",
             "timestamp": datetime.now().isoformat()
         }
@@ -127,7 +127,7 @@ class BackendIntegrationService:
         url = f"{self.backend_url}/video-processing-status"
         
         try:
-            print(f"📢 Notifying backend of video processing start: {video_id}")
+            print(f"📢 Notifying AI service of processing start for occurrence_id: {occurrence_id}")
             
             response = requests.post(
                 url,
